@@ -8,9 +8,9 @@ from datetime import datetime
 from typing import Dict, Any
 
 # ===================== CONFIG =====================
-DAILY_LIMIT_SECONDS = 60*5.1         # Used only on first run if no state file exists.
+DAILY_LIMIT_SECONDS = 5400         # Used only on first run if no state file exists.
 WARNING_THRESHOLD_SECONDS = 300     # 5 minutes warning popup
-DRY_RUN = True                     # True = no real logout; shows message instead
+DRY_RUN = False                     # True = no real logout; shows message instead
 ENFORCE_LOGOUT_ON_CLOSE = True      # If user closes the window, enforce logout
 
 APP_DIR_NAME = ".logout_timer"      # folder under user's home
@@ -129,11 +129,27 @@ def log_off_windows() -> None:
                 f"shutdown error: {e}\nAPI error: {e2}"
             )
 
+def valid_passcode(code: str) -> bool:
+    """Check if passcode matches HannahFeldfixYYYYMMDD."""
+    today = datetime.now().strftime("%Y%m%d")
+    expected = f"HannahFeldfix{today}"
+    return code == expected
+
+
 class DailyLogoutTimerApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Daily Usage Limit — Auto Logout")
         self.root.resizable(False, False)
+
+        # ---- set favicon icon ----
+        try:
+            icon_path = os.path.join(os.path.dirname(__file__), "favicon.ico")
+            if os.path.exists(icon_path):
+                self.root.iconbitmap(icon_path)
+        except Exception as e:
+            print(f"Icon load failed: {e}")
+
 
         # --------- Theme / Styles ----------
         style = ttk.Style()
@@ -218,14 +234,27 @@ class DailyLogoutTimerApp:
         )
         self.subinfo_label.pack(padx=20, pady=(0, 12))
 
-        # Action button
+        # Action buttons frame
+        btn_frame = tk.Frame(card, bg=BG_CARD)
+        btn_frame.pack(pady=(4, 16))
+
+        # Pause button
         self.pause_button = ttk.Button(
-            card,
+            btn_frame,
             text="Pause & Log Out",
             style="Accent.TButton",
             command=self.pause_and_logout
         )
-        self.pause_button.pack(pady=(4, 16))
+        self.pause_button.grid(row=0, column=0, padx=8)
+
+        # Replace old "Add Time" button
+        self.set_time_button = ttk.Button(
+            btn_frame,
+            text="Set Time",
+            style="Accent.TButton",
+            command=self.show_set_time_popup
+        )
+        self.set_time_button.grid(row=0, column=1, padx=8)
 
         # Close behavior
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -239,10 +268,66 @@ class DailyLogoutTimerApp:
                 f"Start: remaining {hhmmss(self.remaining)} "
                 f"(used {hhmmss(self.used_today)} of {hhmmss(self.daily_limit)})"
             )
-            # Show warning immediately if already under threshold
             if self.daily_limit >= self.warning_threshold and self.remaining <= self.warning_threshold:
                 self.show_warning_popup()
             self.tick()
+
+    def show_set_time_popup(self):
+        """Popup to request passcode and set a new daily limit."""
+        top = tk.Toplevel(self.root)
+        top.title("Set Daily Limit")
+        top.configure(bg=BG)
+        top.resizable(False, False)
+        top.transient(self.root)
+        top.grab_set()
+
+        card = ttk.Frame(top, style="Card.TFrame")
+        card.pack(fill="both", expand=True, padx=12, pady=12)
+
+        ttk.Label(card, text="Enter Passcode:", style="PopupBody.TLabel").pack(pady=4)
+        pass_entry = ttk.Entry(card, show="*")
+        pass_entry.pack(pady=4)
+
+        ttk.Label(card, text="New Hours Limit:", style="PopupBody.TLabel").pack(pady=4)
+        hours_entry = ttk.Entry(card)
+        hours_entry.pack(pady=4)
+
+        ttk.Label(card, text="New Minutes Limit:", style="PopupBody.TLabel").pack(pady=4)
+        mins_entry = ttk.Entry(card)
+        mins_entry.pack(pady=4)
+
+        def submit():
+            code = pass_entry.get().strip()
+            if not valid_passcode(code):
+                messagebox.showerror("Error", "Invalid passcode.")
+                return
+            try:
+                hrs = int(hours_entry.get() or 0)
+                mins = int(mins_entry.get() or 0)
+                new_limit = hrs * 3600 + mins * 60
+                if new_limit <= 0:
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror("Error", "Enter valid hours/minutes.")
+                return
+
+            # Update daily limit
+            self.daily_limit = new_limit
+            self.state["daily_limit_seconds"] = self.daily_limit
+            save_state(self.state)
+
+            self.remaining = max(0, self.daily_limit - self.used_today)
+            write_activity_log(f"Daily limit changed to {hhmmss(self.daily_limit)}.")
+            self.update_visuals()
+            messagebox.showinfo("Success", f"Daily limit set to {hhmmss(self.daily_limit)}.")
+            top.destroy()
+
+        ttk.Button(card, text="Set Limit", style="Accent.TButton", command=submit).pack(pady=10)
+
+        top.update_idletasks()
+        top.lift()
+        top.focus_force()
+
 
     # ---------- Behavior helpers ----------
     def rollover_if_new_day(self):
